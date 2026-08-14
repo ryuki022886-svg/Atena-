@@ -23,6 +23,13 @@
   ことができない．一方で全長96をそのまま展開すると全結合層が肥大化する
   ため，ブロックごとにプーリングで長さを縮約してから展開する．
     - 比較用に --pooling gap も選べるようにしてある．
+・正規化層を既定で置かない理由: BatchNormはチャンネルごとに平均を引くため，
+  「窓全体がいま何度か」という絶対水準の情報を落としてしまう．画像認識では
+  照明条件の差を吸収する利点になるが，油温予測は絶対水準そのものが答えに
+  直結するタスクであり，逆効果になる．
+    - 実測でも条件B・h=1のtest MAEが 0.57（BNあり）→ 0.43（BNなし）と改善し，
+      Persistenceベースライン0.42にほぼ並んだ．
+    - 報告用に比較できるよう --norm batch も残してある．
 
 ■ 動作確認
 $ python src/models/cnn.py
@@ -31,16 +38,25 @@ import torch
 import torch.nn as nn
 
 
+def make_norm(norm: str, channels: int) -> nn.Module:
+    """正規化層を生成する．"none" のときは何もしない層を返す．"""
+    if norm == "none":
+        return nn.Identity()
+    if norm == "batch":
+        return nn.BatchNorm1d(channels)
+    raise ValueError(f"unknown norm: {norm} (expected 'none' or 'batch')")
+
+
 class ResidualBlock(nn.Module):
     """Conv1D 2層＋残差接続．チャンネル数は変えず，最後に長さを1/2へ縮約する．"""
 
-    def __init__(self, channels: int, kernel_size: int, dropout: float):
+    def __init__(self, channels: int, kernel_size: int, dropout: float, norm: str):
         super().__init__()
         padding = kernel_size // 2
         self.conv1 = nn.Conv1d(channels, channels, kernel_size, padding=padding)
-        self.bn1 = nn.BatchNorm1d(channels)
+        self.bn1 = make_norm(norm, channels)
         self.conv2 = nn.Conv1d(channels, channels, kernel_size, padding=padding)
-        self.bn2 = nn.BatchNorm1d(channels)
+        self.bn2 = make_norm(norm, channels)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout)
         self.pool = nn.MaxPool1d(2)
@@ -72,6 +88,7 @@ class AblationCNN(nn.Module):
         kernel_size: int = 5,
         dropout: float = 0.1,
         pooling: str = "flatten",
+        norm: str = "none",
     ):
         super().__init__()
         if pooling not in ("flatten", "gap"):
@@ -80,11 +97,11 @@ class AblationCNN(nn.Module):
 
         self.stem = nn.Sequential(
             nn.Conv1d(n_channels, hidden, kernel_size, padding=kernel_size // 2),
-            nn.BatchNorm1d(hidden),
+            make_norm(norm, hidden),
             nn.ReLU(),
         )
         self.blocks = nn.ModuleList(
-            [ResidualBlock(hidden, kernel_size, dropout) for _ in range(n_blocks - 1)]
+            [ResidualBlock(hidden, kernel_size, dropout, norm) for _ in range(n_blocks - 1)]
         )
 
         # 各ブロックで長さが半分になるため，展開後の次元数を事前に求めておく．
@@ -128,10 +145,10 @@ def main() -> None:
     """動作確認用: 条件ごとの出力形状とパラメータ数を表示する．"""
     window, batch = 96, 4
     specs = {"B": (1, 0), "C": (7, 6), "D": (6, 6)}
-    for pooling in ("flatten", "gap"):
-        print(f"=== pooling={pooling} (window={window}) ===")
+    for pooling, norm in (("flatten", "none"), ("flatten", "batch"), ("gap", "none")):
+        print(f"=== pooling={pooling} norm={norm} (window={window}) ===")
         for cond, (n_ch, n_aux) in specs.items():
-            model = AblationCNN(n_ch, n_aux, window=window, pooling=pooling)
+            model = AblationCNN(n_ch, n_aux, window=window, pooling=pooling, norm=norm)
             out = model(torch.randn(batch, window, n_ch), torch.randn(batch, n_aux))
             print(
                 f"  条件{cond}: channels={n_ch} aux={n_aux} "
