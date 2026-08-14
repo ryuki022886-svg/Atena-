@@ -64,7 +64,7 @@ def predict(model: nn.Module, split: SplitData, bundle: Bundle, batch_size: int)
     outputs = []
     for i in range(0, len(x_seq), batch_size):
         outputs.append(model(x_seq[i : i + batch_size], x_aux[i : i + batch_size]))
-    return bundle.inverse_target(torch.cat(outputs).numpy())
+    return bundle.inverse_target(torch.cat(outputs).numpy(), split.origin_ot)
 
 
 def train_one(bundle: Bundle, args: argparse.Namespace, seed: int) -> dict:
@@ -127,6 +127,7 @@ def train_one(bundle: Bundle, args: argparse.Namespace, seed: int) -> dict:
         "condition": bundle.condition,
         "horizon": bundle.horizon,
         "window": bundle.window,
+        "target_mode": bundle.target_mode,
         "seed": seed,
         "val_mae": best_val,
         "test_mae": test_scores["mae"],
@@ -145,6 +146,8 @@ def main() -> None:
     parser.add_argument("--horizons", type=int, nargs="+", default=[1, 24, 96, 336])
     parser.add_argument("--seeds", type=int, nargs="+", default=[42])
     parser.add_argument("--window", type=int, default=96, help="入力窓幅N（時刻数）")
+    parser.add_argument("--target-mode", default="absolute", choices=["absolute", "delta"],
+                        help="absolute: OT(t+h)を予測 / delta: OT(t+h)-OT(t)を予測")
 
     parser.add_argument("--hidden", type=int, default=32)
     parser.add_argument("--blocks", type=int, default=3)
@@ -162,14 +165,19 @@ def main() -> None:
 
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--result-dir", type=Path, default=Path("results"))
-    parser.add_argument("--out", default="ablation.csv", help="results-dir配下の出力CSV名")
+    parser.add_argument("--out", default=None,
+                        help="results-dir配下の出力CSV名（既定は ablation_<target_mode>.csv）")
     args = parser.parse_args()
 
-    pred_dir = args.result_dir / "preds"
+    # 予測とCSVはtarget_modeごとに分けて保存し，absolute版とdelta版を並べて比較できるようにする．
+    if args.out is None:
+        args.out = f"ablation_{args.target_mode}.csv"
+    pred_dir = args.result_dir / f"preds_{args.target_mode}"
     pred_dir.mkdir(parents=True, exist_ok=True)
 
     total = len(args.datasets) * len(args.conditions) * len(args.horizons) * len(args.seeds)
-    print(f"学習対象: {total}モデル (pooling={args.pooling}, window={args.window})")
+    print(f"学習対象: {total}モデル (target_mode={args.target_mode}, "
+          f"pooling={args.pooling}, window={args.window})")
     header = f"{'dataset':7s} {'cond':>4s} {'horizon':>8s} {'seed':>5s} " \
              f"{'val MAE':>8s} {'test MAE':>9s} {'test RMSE':>10s} {'epoch':>6s} {'sec':>6s}"
     print(header)
@@ -178,7 +186,8 @@ def main() -> None:
     for name in args.datasets:
         for cond in args.conditions:
             for horizon in args.horizons:
-                bundle = build_bundle(name, cond, horizon, args.window, args.data_dir)
+                bundle = build_bundle(name, cond, horizon, args.window, args.data_dir,
+                                      args.target_mode)
                 for seed in args.seeds:
                     result = train_one(bundle, args, seed)
                     test_pred = result.pop("test_pred")

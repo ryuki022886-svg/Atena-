@@ -258,12 +258,15 @@ def main() -> None:
                         help="保全判断で許容できる誤差の仮定（摂氏）")
     parser.add_argument("--spike-quantile", type=float, default=0.95,
                         help="急変とみなす上昇幅の分位点（train区間から算出）")
+    parser.add_argument("--pred-subdir", default="preds_absolute",
+                        help="result-dir配下の予測ディレクトリ（preds_absolute / preds_delta）")
+    parser.add_argument("--suffix", default="", help="出力ファイル名に付ける接尾辞")
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--result-dir", type=Path, default=Path("results"))
     parser.add_argument("--fig-dir", type=Path, default=Path("figures"))
     args = parser.parse_args()
 
-    pred_dir = args.result_dir / "preds"
+    pred_dir = args.result_dir / args.pred_subdir
     if not any(pred_dir.glob("*.npz")):
         raise SystemExit(f"予測が見つかりません: {pred_dir}（先に src/train.py を実行してください）")
 
@@ -304,12 +307,12 @@ def main() -> None:
         print(f"  {r.dataset:7s} {r.horizon:7d}h {r.delta:6.2f} {r.condition:>4s} "
               f"{int(r.n_events):6d} {r.recall:7.3f} {r.precision:7.3f} {r.f1:6.3f}")
 
-    absolute.to_csv(args.result_dir / "operational_absolute_threshold.csv", index=False)
-    errors.to_csv(args.result_dir / "operational_error_percentiles.csv", index=False)
-    leads.to_csv(args.result_dir / "operational_lead_time.csv", index=False)
-    spikes.to_csv(args.result_dir / "operational_spike_detection.csv", index=False)
-    plot_lead_time(errors, args.tolerances, args.fig_dir / "operational_lead_time.png")
-    plot_spike_recall(spikes, args.fig_dir / "operational_spike_detection.png")
+    absolute.to_csv(args.result_dir / f"operational_absolute_threshold{args.suffix}.csv", index=False)
+    errors.to_csv(args.result_dir / f"operational_error_percentiles{args.suffix}.csv", index=False)
+    leads.to_csv(args.result_dir / f"operational_lead_time{args.suffix}.csv", index=False)
+    spikes.to_csv(args.result_dir / f"operational_spike_detection{args.suffix}.csv", index=False)
+    plot_lead_time(errors, args.tolerances, args.fig_dir / f"operational_lead_time{args.suffix}.png")
+    plot_spike_recall(spikes, args.fig_dir / f"operational_spike_detection{args.suffix}.png")
     print(f"\n保存先: {args.result_dir}/operational_*.csv, {args.fig_dir}/operational_*.png")
 
 

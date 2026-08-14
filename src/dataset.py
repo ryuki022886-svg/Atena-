@@ -25,8 +25,18 @@ ETT アブレーション実験用データセット構築 (Dataset Builder for 
     ※ 条件A (Persistence) はモデルを持たないため，OT(t) をそのまま予測値と
        する．比較の公平性のため origin_ot として全条件に同梱する．
 
+■ 予測対象の切り替え (target_mode)
+・absolute: OT(t+h) を直接予測する．仕様書どおりの素直な定式化．
+・delta: OT(t+h) - OT(t) を予測する．窓・補助入力・ターゲットのすべてから
+  予測実行時点tの値を引くため，水準がサンプルごとに0へ揃い，経年ドリフトの
+  影響を受けない．
+
+    ※ 経年ドリフトはETTh1では油温(-0.90σ)に，ETTh2では負荷(最大-1.47σ)に現れる．
+       入る経路は違うが両データセットに存在するため，全チャンネルに適用する．
+    ※ 条件Dはdeltaモードを使えない（起点となるOT(t)を入力に持たないため）．
+
 ■ 動作確認
-$ python src/dataset.py --dataset ETTh1 --window 96
+$ python src/dataset.py --dataset ETTh1 --window 96 --target-mode delta
 """
 import argparse
 from dataclasses import dataclass
@@ -79,6 +89,7 @@ class Bundle:
     condition: str
     horizon: int
     window: int
+    target_mode: str        # "absolute": OT(t+h)を直接予測 / "delta": OT(t+h)-OT(t)を予測
     train: SplitData
     val: SplitData
     test: SplitData
@@ -95,8 +106,16 @@ class Bundle:
         """時刻t+hの補助入力の次元数（条件Bなら0，C・Dなら6）．"""
         return self.train.x_aux.shape[1]
 
-    def inverse_target(self, y_norm: np.ndarray) -> np.ndarray:
-        """正規化されたOT予測値を元スケール（摂氏）に戻す．"""
+    def inverse_target(self, y_norm: np.ndarray, origin_ot: np.ndarray) -> np.ndarray:
+        """
+        モデル出力を元スケール（摂氏）のOT予測値に戻す．
+
+        ・absoluteモード: train統計で逆変換するだけ
+        ・deltaモード: 予測しているのは変化量なので，起点のOT(t)に足し戻す
+        ・origin_ot: 各サンプルの予測実行時点の実測OT．absoluteモードでは使わない
+        """
+        if self.target_mode == "delta":
+            return origin_ot + y_norm * self.target_std
         return y_norm * self.target_std + self.target_mean
 
 
@@ -150,6 +169,7 @@ def _build_split(
     horizon: int,
     seq_cols: list,
     aux_cols: list,
+    target_mode: str,
 ) -> SplitData:
     """
     指定した分割区間に属するサンプルを切り出す．
@@ -157,6 +177,9 @@ def _build_split(
     ・サンプルの所属は「予測ターゲット時刻 t+h がどの区間に入るか」で決める．
       入力窓が前の区間まで遡ることは許容する（推論時点で観測済みのデータを
       使うだけであり，リークではない．Informer系の実装も同じ扱い）．
+    ・deltaモードでは，窓・補助入力・ターゲットのすべてから「予測実行時点t の値」を
+      引く．これによりサンプルごとに水準が0に揃い，経年ドリフトの影響を受けなくなる．
+      スケールはtrain統計の標準偏差で共通に割るため，サンプル間の大小関係は保たれる．
     """
     lo, hi = bounds
 
@@ -168,16 +191,26 @@ def _build_split(
     win_idx = targets - horizon - window + 1
     origins = targets - horizon
 
-    x_seq = windows[win_idx][:, :, seq_cols]
+    seq = windows[win_idx]
+    aux = normed[targets]
+    y = normed[targets, OT_IDX]
+    if target_mode == "delta":
+        # normed は (raw - train平均) / train標準偏差 なので，正規化値どうしの差は
+        # (raw - raw起点) / train標準偏差 に等しい．平均項は差し引きで消える．
+        anchor = normed[origins]
+        seq = seq - anchor[:, None, :]
+        aux = aux - anchor
+        y = y - anchor[:, OT_IDX]
+
     x_aux = (
-        normed[targets][:, aux_cols]
+        aux[:, aux_cols]
         if aux_cols
         else np.zeros((len(targets), 0), dtype=np.float32)
     )
     return SplitData(
-        x_seq=np.ascontiguousarray(x_seq),
+        x_seq=np.ascontiguousarray(seq[:, :, seq_cols]),
         x_aux=np.ascontiguousarray(x_aux),
-        y=normed[targets, OT_IDX],
+        y=y,
         y_raw=raw[targets, OT_IDX],
         origin_ot=raw[origins, OT_IDX],
         target_index=targets,
@@ -190,15 +223,26 @@ def build_bundle(
     horizon_hours: int,
     window: int,
     data_dir: Path,
+    target_mode: str = "absolute",
 ) -> Bundle:
     """
     1つの (データセット, 条件, ホライズン) に対する train/val/test 一式を構築する．
 
     ・正規化: train区間の平均・標準偏差のみを使う（4.4節，リーク防止）
     ・horizon_hours: 時間単位で指定し，内部で行数（× steps_per_hour）に換算する
+    ・target_mode: "absolute" はOT(t+h)を直接予測する．"delta" はOT(t+h)-OT(t)を
+      予測し，経年ドリフトの影響を受けないようにする．
+        - 条件Dはdeltaモードを使えない．OTを入力に持たないため起点OT(t)が無く，
+          変化量を絶対温度へ戻せないからである．これは実装上の都合ではなく，
+          「負荷特徴量だけでは油温の絶対水準を決められない」という条件Dの
+          限界そのものを表している．
     """
     if condition not in CONDITIONS:
         raise ValueError(f"unknown condition: {condition} (expected one of {list(CONDITIONS)})")
+    if target_mode not in ("absolute", "delta"):
+        raise ValueError(f"unknown target_mode: {target_mode}")
+    if target_mode == "delta" and condition == "D":
+        raise ValueError("条件Dはdeltaモードに対応しない（起点となるOT(t)を入力に持たないため）")
 
     df = load_dataframe(name, data_dir)
     sph = steps_per_hour(df)
@@ -218,7 +262,7 @@ def build_bundle(
 
     splits = {
         key: _build_split(
-            windows, normed, raw, bounds[key], window, horizon, seq_cols, aux_cols
+            windows, normed, raw, bounds[key], window, horizon, seq_cols, aux_cols, target_mode
         )
         for key in ("train", "val", "test")
     }
@@ -227,6 +271,7 @@ def build_bundle(
         condition=condition,
         horizon=horizon_hours,
         window=window,
+        target_mode=target_mode,
         target_mean=float(mean[OT_IDX]),
         target_std=float(std[OT_IDX]),
         **splits,
@@ -240,6 +285,7 @@ def main() -> None:
     parser.add_argument("--window", type=int, default=96, help="入力窓幅N（時刻数）")
     parser.add_argument("--horizons", type=int, nargs="+", default=[1, 24, 96, 336])
     parser.add_argument("--conditions", nargs="+", default=["B", "C", "D"])
+    parser.add_argument("--target-mode", default="absolute", choices=["absolute", "delta"])
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     args = parser.parse_args()
 
@@ -252,7 +298,7 @@ def main() -> None:
 
     for cond in args.conditions:
         for h in args.horizons:
-            b = build_bundle(args.dataset, cond, h, args.window, args.data_dir)
+            b = build_bundle(args.dataset, cond, h, args.window, args.data_dir, args.target_mode)
             print(
                 f"  cond={cond} h={h:4d}h  channels={b.n_channels} aux={b.n_aux}  "
                 f"train={len(b.train):5d} val={len(b.val):5d} test={len(b.test):5d}  "
