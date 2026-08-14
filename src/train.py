@@ -127,6 +127,7 @@ def train_one(bundle: Bundle, args: argparse.Namespace, seed: int) -> dict:
         "condition": bundle.condition,
         "horizon": bundle.horizon,
         "window": bundle.window,
+        "split_mode": bundle.split_mode,
         "target_mode": bundle.target_mode,
         "seed": seed,
         "val_mae": best_val,
@@ -148,6 +149,8 @@ def main() -> None:
     parser.add_argument("--window", type=int, default=96, help="入力窓幅N（時刻数）")
     parser.add_argument("--target-mode", default="absolute", choices=["absolute", "delta"],
                         help="absolute: OT(t+h)を予測 / delta: OT(t+h)-OT(t)を予測")
+    parser.add_argument("--split-mode", default="informer", choices=["informer", "fiscal"],
+                        help="informer: 12/4/4ヶ月分割 / fiscal: 年度1で学習し年度2でテスト")
 
     parser.add_argument("--hidden", type=int, default=32)
     parser.add_argument("--blocks", type=int, default=3)
@@ -165,18 +168,20 @@ def main() -> None:
 
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--result-dir", type=Path, default=Path("results"))
-    parser.add_argument("--out", default=None,
-                        help="results-dir配下の出力CSV名（既定は ablation_<target_mode>.csv）")
+    parser.add_argument("--tag", default=None,
+                        help="出力名の識別子（既定は <split_mode>_<target_mode>）")
+    parser.add_argument("--out", default=None, help="results-dir配下の出力CSV名")
     args = parser.parse_args()
 
-    # 予測とCSVはtarget_modeごとに分けて保存し，absolute版とdelta版を並べて比較できるようにする．
+    # 設定ごとに出力を分け，複数の定式化を並べて比較できるようにする．
+    tag = args.tag or f"{args.split_mode}_{args.target_mode}"
     if args.out is None:
-        args.out = f"ablation_{args.target_mode}.csv"
-    pred_dir = args.result_dir / f"preds_{args.target_mode}"
+        args.out = f"ablation_{tag}.csv"
+    pred_dir = args.result_dir / f"preds_{tag}"
     pred_dir.mkdir(parents=True, exist_ok=True)
 
     total = len(args.datasets) * len(args.conditions) * len(args.horizons) * len(args.seeds)
-    print(f"学習対象: {total}モデル (target_mode={args.target_mode}, "
+    print(f"学習対象: {total}モデル (split={args.split_mode}, target={args.target_mode}, "
           f"pooling={args.pooling}, window={args.window})")
     header = f"{'dataset':7s} {'cond':>4s} {'horizon':>8s} {'seed':>5s} " \
              f"{'val MAE':>8s} {'test MAE':>9s} {'test RMSE':>10s} {'epoch':>6s} {'sec':>6s}"
@@ -187,7 +192,7 @@ def main() -> None:
         for cond in args.conditions:
             for horizon in args.horizons:
                 bundle = build_bundle(name, cond, horizon, args.window, args.data_dir,
-                                      args.target_mode)
+                                      args.target_mode, args.split_mode)
                 for seed in args.seeds:
                     result = train_one(bundle, args, seed)
                     test_pred = result.pop("test_pred")

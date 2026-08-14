@@ -4,9 +4,15 @@ ETT アブレーション実験用データセット構築 (Dataset Builder for 
 ========================================================================
 
 仕様書4.0節のアブレーション条件A〜Dに対応する入力・正解ペアを生成する．
-12/4/4ヶ月分割・train統計のみによる正規化（4.4節）をここで一元的に扱い，
-以降のベースライン・CNN・LightGBMはすべて本モジュール経由で同じ
-サンプル集合を参照する．
+分割とtrain統計のみによる正規化（4.4節）をここで一元的に扱い，
+以降のベースライン・CNNはすべて本モジュール経由で同じサンプル集合を参照する．
+
+■ 分割の切り替え (split_mode)
+・informer: 仕様書4.4節準拠の12/4/4ヶ月分割．ベンチマークと比較できるが
+  test区間が冬季4ヶ月に限られ，季節に偏った評価になる．
+・fiscal: 年度1（2016-07〜2017-06）で学習し，年度2（2017-07〜2018-06）を
+  まるごとテストする．test区間が12ヶ月あり全季節をカバーする．
+  年度1の末尾2ヶ月をvalに充てる．
 
 ■ 予測の定式化
 ・予測実行時刻を t（t以前のデータは既知），ホライズンを h とする．
@@ -60,6 +66,10 @@ TARGET = "OT"
 MONTH_HOURS = 30 * 24
 SPLIT_MONTHS = (12, 4, 4)
 
+# 年度分割（fiscalモード）の設定．データが2016-07始まりのため7月を年度の開始とする．
+FISCAL_SPLIT = pd.Timestamp("2017-07-01")
+FISCAL_VAL_MONTHS = 2
+
 # 特徴量行列の列順を [OT, 負荷6列] に固定する．以降の列インデックスはこの順序が前提．
 FEATURE_COLS = [TARGET] + LOAD_COLS
 OT_IDX = 0
@@ -96,6 +106,7 @@ class Bundle:
     condition: str
     horizon: int
     window: int
+    split_mode: str         # "informer": 12/4/4ヶ月分割 / "fiscal": 年度1で学習し年度2でテスト
     target_mode: str        # "absolute": OT(t+h)を直接予測 / "delta": OT(t+h)-OT(t)を予測
     train: SplitData
     val: SplitData
@@ -138,22 +149,46 @@ def steps_per_hour(df: pd.DataFrame) -> int:
     return round(60 / freq_minutes)
 
 
-def split_bounds(n_rows: int, sph: int) -> dict:
+def split_bounds(n_rows: int, sph: int, mode: str = "informer", index=None) -> dict:
     """
-    Informer論文準拠の12/4/4ヶ月分割の境界（行番号）を返す．
+    train/val/testの境界（行番号）を返す．
 
     ・戻り値: {"train": (開始, 終了), "val": (...), "test": (...)}（終了は含まない）
+    ・mode="informer": 仕様書4.4節準拠の12/4/4ヶ月分割（1ヶ月=30日）．
+      ベンチマークとの比較可能性があるが，test区間が冬季4ヶ月に限られる．
+    ・mode="fiscal": 年度1で学習し年度2をまるごとテストする．
+      test区間が12ヶ月あり全季節をカバーするため，季節に依存しない評価ができる．
+      「1年運用してデータを貯め，翌年から予測を使う」という実運用の姿にも対応する．
+        - index（DatetimeIndex）が必要．年度境界は実際の日付で判定する．
     """
-    train_months, val_months, test_months = SPLIT_MONTHS
-    step = MONTH_HOURS * sph
-    train_end = train_months * step
-    val_end = (train_months + val_months) * step
-    test_end = min((train_months + val_months + test_months) * step, n_rows)
-    return {
-        "train": (0, train_end),
-        "val": (train_end, val_end),
-        "test": (val_end, test_end),
-    }
+    if mode == "informer":
+        train_months, val_months, test_months = SPLIT_MONTHS
+        step = MONTH_HOURS * sph
+        train_end = train_months * step
+        val_end = (train_months + val_months) * step
+        test_end = min((train_months + val_months + test_months) * step, n_rows)
+        return {
+            "train": (0, train_end),
+            "val": (train_end, val_end),
+            "test": (val_end, test_end),
+        }
+
+    if mode == "fiscal":
+        if index is None:
+            raise ValueError("fiscalモードにはDatetimeIndexが必要")
+        # 年度1と年度2の境界．ここより前が年度1，以降が年度2．
+        year2_start = int(np.searchsorted(index.to_numpy(), FISCAL_SPLIT.to_datetime64()))
+        # 年度1の末尾2ヶ月をvalに充て，残りをtrainとする．
+        val_start = year2_start - FISCAL_VAL_MONTHS * MONTH_HOURS * sph
+        if val_start <= 0:
+            raise ValueError("年度1が短すぎてvalを確保できない")
+        return {
+            "train": (0, val_start),
+            "val": (val_start, year2_start),
+            "test": (year2_start, n_rows),
+        }
+
+    raise ValueError(f"unknown split mode: {mode} (expected 'informer' or 'fiscal')")
 
 
 def _sliding_windows(values: np.ndarray, window: int) -> np.ndarray:
@@ -231,6 +266,7 @@ def build_bundle(
     window: int,
     data_dir: Path,
     target_mode: str = "absolute",
+    split_mode: str = "informer",
 ) -> Bundle:
     """
     1つの (データセット, 条件, ホライズン) に対する train/val/test 一式を構築する．
@@ -252,7 +288,7 @@ def build_bundle(
     df = load_dataframe(name, data_dir)
     sph = steps_per_hour(df)
     raw = df[FEATURE_COLS].to_numpy(dtype=np.float32)
-    bounds = split_bounds(len(raw), sph)
+    bounds = split_bounds(len(raw), sph, split_mode, df.index)
 
     # train区間の統計のみで標準化する．定数列で0除算しないよう標準偏差の下限を置く．
     train_lo, train_hi = bounds["train"]
@@ -276,6 +312,7 @@ def build_bundle(
         condition=condition,
         horizon=horizon_hours,
         window=window,
+        split_mode=split_mode,
         target_mode=target_mode,
         target_mean=float(mean[OT_IDX]),
         target_std=float(std[OT_IDX]),
@@ -291,19 +328,22 @@ def main() -> None:
     parser.add_argument("--horizons", type=int, nargs="+", default=[1, 24, 96, 336])
     parser.add_argument("--conditions", nargs="+", default=["B", "C", "D"])
     parser.add_argument("--target-mode", default="absolute", choices=["absolute", "delta"])
+    parser.add_argument("--split-mode", default="informer", choices=["informer", "fiscal"])
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     args = parser.parse_args()
 
     df = load_dataframe(args.dataset, args.data_dir)
     sph = steps_per_hour(df)
-    bounds = split_bounds(len(df), sph)
-    print(f"=== {args.dataset} (rows={len(df)}, steps/hour={sph}, window={args.window}) ===")
+    bounds = split_bounds(len(df), sph, args.split_mode, df.index)
+    print(f"=== {args.dataset} (rows={len(df)}, steps/hour={sph}, window={args.window}, "
+          f"split={args.split_mode}) ===")
     for key, (lo, hi) in bounds.items():
         print(f"  {key:5s}: rows[{lo}:{hi}]  {df.index[lo]} 〜 {df.index[hi - 1]}")
 
     for cond in args.conditions:
         for h in args.horizons:
-            b = build_bundle(args.dataset, cond, h, args.window, args.data_dir, args.target_mode)
+            b = build_bundle(args.dataset, cond, h, args.window, args.data_dir,
+                             args.target_mode, args.split_mode)
             print(
                 f"  cond={cond} h={h:4d}h  channels={b.n_channels} aux={b.n_aux}  "
                 f"train={len(b.train):5d} val={len(b.val):5d} test={len(b.test):5d}  "

@@ -34,16 +34,18 @@ from dataset import TARGET, build_bundle, load_dataframe, split_bounds, steps_pe
 from metrics import score
 
 
-def evaluate_persistence(name: str, horizon: int, window: int, data_dir: Path) -> dict:
+def evaluate_persistence(name: str, horizon: int, window: int, data_dir: Path,
+                         split_mode: str = "informer") -> dict:
     """
     1つの (データセット, ホライズン) について条件Aを評価する．
 
     ・条件Bのバンドルを借用するが，使うのは origin_ot と y_raw のみ．
       条件によらず同じ値なので，どの条件を借りても結果は変わらない．
+    ・split_mode を揃えることで，CNN側とまったく同じサンプル集合の上で比較できる．
     """
-    bundle = build_bundle(name, "B", horizon, window, data_dir)
+    bundle = build_bundle(name, "B", horizon, window, data_dir, split_mode=split_mode)
 
-    row = {"dataset": name, "horizon": horizon, "window": window}
+    row = {"dataset": name, "horizon": horizon, "window": window, "split_mode": split_mode}
     for split_name in ("val", "test"):
         split = getattr(bundle, split_name)
         for key, value in score(split.y_raw, split.origin_ot).items():
@@ -85,6 +87,8 @@ def main() -> None:
     parser.add_argument("--datasets", nargs="+", default=["ETTh1", "ETTh2"])
     parser.add_argument("--horizons", type=int, nargs="+", default=[1, 24, 96, 336])
     parser.add_argument("--window", type=int, default=96, help="入力窓幅N（サンプル集合を揃えるために使用）")
+    parser.add_argument("--split-mode", default="informer", choices=["informer", "fiscal"],
+                        help="informer: 12/4/4ヶ月分割 / fiscal: 年度1で学習し年度2でテスト")
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--result-dir", type=Path, default=Path("results"))
     parser.add_argument("--fig-dir", type=Path, default=Path("figures"))
@@ -94,21 +98,21 @@ def main() -> None:
     args.fig_dir.mkdir(parents=True, exist_ok=True)
 
     rows = [
-        evaluate_persistence(name, h, args.window, args.data_dir)
+        evaluate_persistence(name, h, args.window, args.data_dir, args.split_mode)
         for name in args.datasets
         for h in args.horizons
     ]
     table = pd.DataFrame(rows)
 
-    csv_path = args.result_dir / "baseline.csv"
+    csv_path = args.result_dir / f"baseline_{args.split_mode}.csv"
     table.to_csv(csv_path, index=False)
-    fig_path = args.fig_dir / "baseline_persistence.png"
+    fig_path = args.fig_dir / f"baseline_persistence_{args.split_mode}.png"
     plot_baseline(table, fig_path)
 
     for name in args.datasets:
         df = load_dataframe(name, args.data_dir)
         sph = steps_per_hour(df)
-        bounds = split_bounds(len(df), sph)
+        bounds = split_bounds(len(df), sph, args.split_mode, df.index)
         lo, hi = bounds["test"]
         print(f"\n=== {name} 条件A (Persistence) ===")
         print(f"  test区間: {df.index[lo]} 〜 {df.index[hi - 1]}  ({hi - lo}時刻)")
