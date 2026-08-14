@@ -3,12 +3,6 @@
 Athena Technologies社 インターン選考課題。ETT（Electricity Transformer Temperature）データセットを用いて、
 変圧器のオイル温度（OT）を将来予測し、実際の運用・保全判断にどの程度価値を出せそうかを検証するPoC。
 
-## 進捗状況
-
-- [x] Phase 1: EDA
-- [x] Phase 2: モデル構築（アブレーション実験）
-- [ ] Phase 3: 報告スライド
-
 ## セットアップ
 
 ```bash
