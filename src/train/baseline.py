@@ -15,23 +15,22 @@
        参考として全期間の値も併記する．
 
 ■ 出力
-・results/baseline.csv: データセット×ホライズン別のMAE・RMSE
-・figures/baseline_persistence.png: ホライズンに対する誤差の推移
+・results/baseline_<split_mode>.csv: データセット×ホライズン別のMAE・RMSE
+・figures/03_ablation/persistence_baseline_<split_mode>.png: ホライズンに対する誤差の推移
 
 ■ 実行方法
-$ python src/baseline.py --datasets ETTh1 ETTh2 --window 96
+$ python -m src.train.baseline --datasets ETTh1 ETTh2 --window 96
 """
 import argparse
 from pathlib import Path
 
-import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from dataset import TARGET, build_bundle, load_dataframe, split_bounds, steps_per_hour
-from metrics import score
+from src.common import plotting
+from src.common.dataset import TARGET, build_bundle, load_dataframe, split_bounds, steps_per_hour
+from src.common.metrics import score
 
 
 def evaluate_persistence(name: str, horizon: int, window: int, data_dir: Path,
@@ -62,24 +61,19 @@ def full_period_mae(name: str, horizon: int, data_dir: Path) -> float:
     return float(np.mean(np.abs(ot[step:] - ot[:-step])))
 
 
-def plot_baseline(table: pd.DataFrame, fig_path: Path) -> None:
+def plot_baseline(table: pd.DataFrame, fig_path: Path) -> Path:
     """ホライズンに対する誤差の伸び方を，データセット別に描画する．"""
     fig, axes = plt.subplots(1, 2, figsize=(11, 4))
     for metric, ax in zip(("mae", "rmse"), axes):
         for name, group in table.groupby("dataset"):
             group = group.sort_values("horizon")
             ax.plot(group["horizon"], group[f"test_{metric}"], marker="o", label=name)
-        ax.set_xscale("log")
-        ax.set_xticks(sorted(table["horizon"].unique()))
-        ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-        ax.set_xlabel("horizon (hours)")
+        plotting.horizon_axis(ax, table["horizon"].unique())
         ax.set_ylabel(f"test {metric.upper()} (degC)")
         ax.set_title(f"Persistence baseline: {metric.upper()}")
-        ax.grid(alpha=0.3)
+        plotting.grid(ax)
         ax.legend()
-    fig.tight_layout()
-    fig.savefig(fig_path, dpi=120)
-    plt.close(fig)
+    return plotting.save(fig, fig_path)
 
 
 def main() -> None:
@@ -95,7 +89,6 @@ def main() -> None:
     args = parser.parse_args()
 
     args.result_dir.mkdir(parents=True, exist_ok=True)
-    args.fig_dir.mkdir(parents=True, exist_ok=True)
 
     rows = [
         evaluate_persistence(name, h, args.window, args.data_dir, args.split_mode)
@@ -106,8 +99,10 @@ def main() -> None:
 
     csv_path = args.result_dir / f"baseline_{args.split_mode}.csv"
     table.to_csv(csv_path, index=False)
-    fig_path = args.fig_dir / f"baseline_persistence_{args.split_mode}.png"
-    plot_baseline(table, fig_path)
+    fig_path = plot_baseline(
+        table,
+        args.fig_dir / plotting.FIG_ABLATION / f"persistence_baseline_{args.split_mode}.png",
+    )
 
     for name in args.datasets:
         df = load_dataframe(name, args.data_dir)

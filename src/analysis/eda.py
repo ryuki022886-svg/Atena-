@@ -4,44 +4,33 @@ ETT オイル温度予測 EDA スクリプト (ETT Oil Temperature Forecasting E
 ========================================================================
 
 仕様書3節で報告されている6つの分析を，指定したETTデータセットに対して
-再現する．要約値をコンソールに出力し，グラフを figures/<データセット名>/
-に保存する．
+再現する．要約値をコンソールに出力し，グラフを
+figures/01_eda/<データセット名>/ に保存する．
 
 ■ 対象データセット
 ・ETTh1, ETTh2: デフォルトの対象（1時間粒度）
 ・ETTm1, ETTm2: --datasets オプションで指定した場合のみ対象（15分粒度）
 
+■ 出力する図（figures/01_eda/<データセット名>/）
+・autocorrelation.png:      3.1 OTの自己相関
+・load_lag_correlation.png: 3.2 負荷特徴量とOTのラグ相関
+・periodicity.png:          3.3 時刻別・曜日別・月別の周期性
+・distribution_shift.png:   3.4 月次OT平均と12/4/4分割の位置
+・persistence_baseline.png: 3.6 ホライズン別のPersistence誤差
+    ※ 3.5 データ品質は表のみで図はない
+
 ■ 実行方法
-$ python src/eda.py --datasets ETTh1 ETTh2
+$ python -m src.analysis.eda --datasets ETTh1 ETTh2
 """
 import argparse
 from pathlib import Path
 
-import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-LOAD_COLS = ["HUFL", "HULL", "MUFL", "MULL", "LUFL", "LULL"]
-TARGET = "OT"
-
-# Informer論文の慣例: 1ヶ月=30日として，12/4/4ヶ月でtrain/val/testに分割する．
-# （暦月ではなく30日単位のため，実際の境界日は月末とはズレる．）
-MONTH_HOURS = 30 * 24
-
-
-def load_data(name: str, data_dir: Path) -> pd.DataFrame:
-    """CSVを読み込み，date列をインデックスにした時系列データフレームを返す．"""
-    df = pd.read_csv(data_dir / f"{name}.csv", parse_dates=["date"])
-    df = df.set_index("date").sort_index()
-    return df
-
-
-def steps_per_hour(df: pd.DataFrame) -> int:
-    """1時間あたりの行数（ETThなら1，ETTmなら4）を，実際の時刻間隔から推定する．"""
-    freq_minutes = df.index.to_series().diff().dropna().mode()[0].total_seconds() / 60
-    return round(60 / freq_minutes)
+from src.common import plotting
+from src.common.dataset import LOAD_COLS, TARGET, load_dataframe, split_bounds, steps_per_hour
 
 
 # ------------------------------------------------------------------------
@@ -53,7 +42,7 @@ def section_3_1_autocorrelation(df: pd.DataFrame, sph: int, outdir: Path) -> dic
     ラグ（時間差）を変えながら計算する．
 
     ・戻り値: 代表的なラグ（1, 6, 24, 168, 720時間）ごとの自己相関係数
-    ・図: 3_1_autocorrelation.png（ラグ30日分の推移）
+    ・図: autocorrelation.png（ラグ30日分の推移）
     """
     ot = df[TARGET]
     lags_h = [1, 6, 24, 168, 720]
@@ -69,9 +58,8 @@ def section_3_1_autocorrelation(df: pd.DataFrame, sph: int, outdir: Path) -> dic
     ax.set_ylabel("autocorrelation of OT")
     ax.set_title("3.1 OT self-autocorrelation")
     ax.axhline(0, color="gray", linewidth=0.5)
-    fig.tight_layout()
-    fig.savefig(outdir / "3_1_autocorrelation.png", dpi=120)
-    plt.close(fig)
+    plotting.grid(ax)
+    plotting.save(fig, outdir / "autocorrelation.png")
 
     return results
 
@@ -86,7 +74,7 @@ def section_3_2_load_feature_correlation(df: pd.DataFrame, sph: int, outdir: Pat
     負荷の変化からOTの変化までに時間差（熱応答遅延）があるかを確認する．
 
     ・戻り値: 各負荷特徴量とOTの相関係数（降順）
-    ・図: 3_2_load_lag_correlation.png（負荷特徴量ごとのラグ相関）
+    ・図: load_lag_correlation.png（負荷特徴量ごとのラグ相関）
         - 横軸が負のラグ: 負荷特徴量がOTより先行している
         - 横軸が正のラグ: OTが負荷特徴量より先行している
     """
@@ -100,11 +88,10 @@ def section_3_2_load_feature_correlation(df: pd.DataFrame, sph: int, outdir: Pat
         ax.plot(list(lag_range), vals)
         ax.axvline(0, color="gray", linewidth=0.5)
         ax.set_title(col)
+        plotting.grid(ax)
     fig.suptitle("3.2 Lag correlation of load features with OT (negative lag = feature leads OT)")
     fig.supxlabel("lag (hours)")
-    fig.tight_layout()
-    fig.savefig(outdir / "3_2_load_lag_correlation.png", dpi=120)
-    plt.close(fig)
+    plotting.save(fig, outdir / "load_lag_correlation.png")
 
     return corr
 
@@ -118,7 +105,7 @@ def section_3_3_periodicity(df: pd.DataFrame, outdir: Path) -> dict:
     支配的か（振幅の大小）を比較する．
 
     ・戻り値: 時刻別・曜日別・月別それぞれの振幅（最大値と最小値の差）
-    ・図: 3_3_periodicity.png（3種類の周期性を並べたグラフ）
+    ・図: periodicity.png（3種類の周期性を並べたグラフ）
     """
     hourly = df.groupby(df.index.hour)[TARGET].mean()
     weekday = df.groupby(df.index.dayofweek)[TARGET].mean()
@@ -137,10 +124,11 @@ def section_3_3_periodicity(df: pd.DataFrame, outdir: Path) -> dict:
     axes[2].set_title(f"OT mean by month (amplitude={monthly.max()-monthly.min():.2f})")
     axes[2].set_xlabel("month")
 
+    for ax in axes:
+        ax.set_ylabel("mean OT (degC)")
+        plotting.grid(ax)
     fig.suptitle("3.3 Periodicity of OT")
-    fig.tight_layout()
-    fig.savefig(outdir / "3_3_periodicity.png", dpi=120)
-    plt.close(fig)
+    plotting.save(fig, outdir / "periodicity.png")
 
     return {
         "hourly_amplitude": hourly.max() - hourly.min(),
@@ -158,19 +146,14 @@ def section_3_4_distribution_shift(df: pd.DataFrame, sph: int, outdir: Path) -> 
     各期間のOT平均・標準偏差を比較する．期間によってOTの水準が
     大きく異なる場合，「分布シフトがある」と判断する．
 
+    ・分割の境界は common.dataset.split_bounds と共有する．EDAとモデル実験で
+      同じ区間を見ていることを保証するため，ここで計算し直さない．
     ・戻り値: train/val/testそれぞれの期間・OT平均・OT標準偏差の一覧
-    ・図: 3_4_distribution_shift.png（月次OT平均の推移とsplit区間の重ね描き）
+    ・図: distribution_shift.png（月次OT平均の推移とsplit区間の重ね描き）
     """
-    n = len(df)
-    train_end = 12 * MONTH_HOURS * sph
-    val_end = 16 * MONTH_HOURS * sph
-    test_end = min(20 * MONTH_HOURS * sph, n)
+    bounds = split_bounds(len(df), sph, "informer", df.index)
+    splits = {key: df.iloc[lo:hi] for key, (lo, hi) in bounds.items()}
 
-    splits = {
-        "train": df.iloc[:train_end],
-        "val": df.iloc[train_end:val_end],
-        "test": df.iloc[val_end:test_end],
-    }
     summary = pd.DataFrame(
         {
             "start": [s.index.min() for s in splits.values()],
@@ -186,11 +169,11 @@ def section_3_4_distribution_shift(df: pd.DataFrame, sph: int, outdir: Path) -> 
     monthly_mean.plot(ax=ax, marker="o")
     for name, s in splits.items():
         ax.axvspan(s.index.min(), s.index.max(), alpha=0.15, label=name)
-    ax.legend()
+    ax.set_ylabel("monthly mean OT (degC)")
     ax.set_title("3.4 Monthly mean OT with train/val/test split (distribution shift)")
-    fig.tight_layout()
-    fig.savefig(outdir / "3_4_distribution_shift.png", dpi=120)
-    plt.close(fig)
+    plotting.grid(ax)
+    ax.legend()
+    plotting.save(fig, outdir / "distribution_shift.png")
 
     return summary
 
@@ -236,8 +219,10 @@ def section_3_6_persistence_baseline(df: pd.DataFrame, sph: int, outdir: Path) -
     最も単純な予測方法（Persistence）の誤差を，ホライズンごとに計算する．
     以降のモデル構築フェーズで，この誤差を上回れるかどうかが比較の基準となる．
 
+    ・ここでは全期間で算出する．モデルと同じtest区間での値は
+      src/train/baseline.py があらためて算出する．
     ・戻り値: ホライズン（1, 6, 24, 96, 336時間）ごとのMAE（平均絶対誤差）
-    ・図: 3_6_persistence_baseline.png（ホライズンとMAEの関係）
+    ・図: persistence_baseline.png（ホライズンとMAEの関係）
     """
     horizons_h = [1, 6, 24, 96, 336]
     mae = {}
@@ -248,23 +233,22 @@ def section_3_6_persistence_baseline(df: pd.DataFrame, sph: int, outdir: Path) -
     mae = pd.Series(mae, name="persistence_MAE")
 
     fig, ax = plt.subplots(figsize=(6, 4))
-    mae.plot(ax=ax, marker="o")
-    ax.set_xlabel("horizon (hours)")
-    ax.set_ylabel("MAE")
-    ax.set_title("3.6 Persistence baseline MAE by horizon")
-    fig.tight_layout()
-    fig.savefig(outdir / "3_6_persistence_baseline.png", dpi=120)
-    plt.close(fig)
+    ax.plot(mae.index, mae.to_numpy(), marker="o", **plotting.CONDITION_STYLE["A"])
+    plotting.horizon_axis(ax, mae.index)
+    ax.set_ylabel("MAE (degC)")
+    ax.set_title("3.6 Persistence baseline MAE by horizon (full period)")
+    plotting.grid(ax)
+    plotting.save(fig, outdir / "persistence_baseline.png")
 
     return mae
 
 
 def run_eda(name: str, data_dir: Path, fig_dir: Path) -> None:
     """1つのデータセットに対して，3.1〜3.6の分析をすべて実行し，結果を出力する．"""
-    outdir = fig_dir / name
+    outdir = fig_dir / plotting.FIG_EDA / name
     outdir.mkdir(parents=True, exist_ok=True)
 
-    df = load_data(name, data_dir)
+    df = load_dataframe(name, data_dir)
     sph = steps_per_hour(df)
 
     print(f"\n{'='*60}\n{name}  (rows={len(df)}, steps/hour={sph})\n{'='*60}")

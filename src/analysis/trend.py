@@ -14,26 +14,22 @@
 ・こうすると2つの年度が同じ季節構成になり，同月どうしを直接比較できる．
 
 ■ 出力
-・figures/trend_timeseries.png: OTの全期間推移と各分割の位置
-・figures/trend_year_over_year.png: 同じ月の年度間比較
+・figures/02_trend/timeseries.png: OTの全期間推移と各分割の位置
+・figures/02_trend/year_over_year.png: 同じ月の年度間比較
 ・results/trend_year_over_year.csv: 同月比較の数値
 
 ■ 実行方法
-$ python src/trend.py
+$ python -m src.analysis.trend
 """
 import argparse
 from pathlib import Path
 
-import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from dataset import TARGET, load_dataframe, split_bounds, steps_per_hour
-
-# 年度の境界．データが7月始まりのため，ここで2つの年度に分ける．
-FISCAL_SPLIT = pd.Timestamp("2017-07-01")
+from src.common import plotting
+from src.common.dataset import FISCAL_SPLIT, TARGET, load_dataframe, split_bounds, steps_per_hour
 
 # 7月始まりで並べた月の順序．季節の流れどおりに読めるようにする．
 MONTH_ORDER = [7, 8, 9, 10, 11, 12, 1, 2, 3, 4, 5, 6]
@@ -59,7 +55,7 @@ def year_over_year_table(df: pd.DataFrame) -> pd.DataFrame:
     return table
 
 
-def plot_timeseries(frames: dict, outpath: Path) -> None:
+def plot_timeseries(frames: dict, outpath: Path) -> Path:
     """
     OTの全期間推移を描き，12/4/4分割と年度分割の位置を重ねる．
 
@@ -88,16 +84,14 @@ def plot_timeseries(frames: dict, outpath: Path) -> None:
 
         ax.set_ylabel("OT (degC)")
         ax.set_title(f"{name}: oil temperature over the full period")
-        ax.grid(alpha=0.3)
-        ax.legend(loc="upper right", fontsize=8)
+        plotting.grid(ax)
+        ax.legend(loc="upper right")
 
     axes[-1].set_xlabel("date")
-    fig.tight_layout()
-    fig.savefig(outpath, dpi=120)
-    plt.close(fig)
+    return plotting.save(fig, outpath)
 
 
-def plot_year_over_year(tables: dict, outpath: Path) -> None:
+def plot_year_over_year(tables: dict, outpath: Path) -> Path:
     """同じ月の年度間比較を，折れ線と差分の棒グラフで描く．"""
     fig, axes = plt.subplots(2, len(tables), figsize=(6 * len(tables), 7), squeeze=False)
     positions = np.arange(len(MONTH_ORDER))
@@ -113,8 +107,8 @@ def plot_year_over_year(tables: dict, outpath: Path) -> None:
         top.set_xlabel("month (fiscal order, starting July)")
         top.set_ylabel("mean OT (degC)")
         top.set_title(f"{name}: same month, different year")
-        top.grid(alpha=0.3)
-        top.legend(fontsize=8)
+        plotting.grid(top)
+        top.legend()
 
         colors = ["tab:red" if d < 0 else "tab:blue" for d in table["diff"]]
         bottom.bar(positions, table["diff"], color=colors)
@@ -127,11 +121,9 @@ def plot_year_over_year(tables: dict, outpath: Path) -> None:
         bottom.set_xlabel("month (fiscal order, starting July)")
         bottom.set_ylabel("year2 - year1 (degC)")
         bottom.set_title(f"{name}: year-over-year change")
-        bottom.grid(alpha=0.3)
+        plotting.grid(bottom)
 
-    fig.tight_layout()
-    fig.savefig(outpath, dpi=120)
-    plt.close(fig)
+    return plotting.save(fig, outpath)
 
 
 def main() -> None:
@@ -155,12 +147,15 @@ def main() -> None:
               f"全月で低下: {'はい' if (table['diff'] < 0).all() else 'いいえ'}\n")
 
     combined = pd.concat(tables, names=["dataset"]).reset_index()
-    combined.to_csv(args.result_dir / "trend_year_over_year.csv", index=False)
-    plot_timeseries(frames, args.fig_dir / "trend_timeseries.png")
-    plot_year_over_year(tables, args.fig_dir / "trend_year_over_year.png")
-    print(f"保存先: {args.fig_dir}/trend_timeseries.png, "
-          f"{args.fig_dir}/trend_year_over_year.png, "
-          f"{args.result_dir}/trend_year_over_year.csv")
+    csv_path = args.result_dir / "trend_year_over_year.csv"
+    combined.to_csv(csv_path, index=False)
+
+    outdir = args.fig_dir / plotting.FIG_TREND
+    paths = [
+        plot_timeseries(frames, outdir / "timeseries.png"),
+        plot_year_over_year(tables, outdir / "year_over_year.png"),
+    ]
+    print(f"保存先: {', '.join(str(p) for p in paths)}, {csv_path}")
 
 
 if __name__ == "__main__":

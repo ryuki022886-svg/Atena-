@@ -5,7 +5,7 @@
 
 仕様書4.3節 Step 2 に対応する．条件B・C・Dの1D CNNを，複数ホライズン・
 複数データセットについて学習し，条件A（Persistence）と同一のtest区間で
-評価した結果を results/ablation.csv に書き出す．
+評価した結果を results/ablation_<tag>.csv に書き出す．
 
 ■ 学習設定
 ・損失: MSE（正規化スケール上で計算）
@@ -20,7 +20,7 @@
 ・同一シードで条件B/C/Dを回すため，条件間の差がシード差に埋もれない．
 
 ■ 実行方法
-$ python src/train.py --datasets ETTh1 ETTh2 --conditions B C D
+$ python -m src.train.ablation --datasets ETTh1 ETTh2 --conditions B C D
 """
 import argparse
 import time
@@ -32,9 +32,9 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from dataset import Bundle, SplitData, build_bundle
-from metrics import score
-from models.cnn import AblationCNN, count_parameters
+from src.common.dataset import Bundle, SplitData, build_bundle
+from src.common.metrics import score
+from src.train.cnn import AblationCNN, count_parameters
 
 
 def set_seed(seed: int) -> None:

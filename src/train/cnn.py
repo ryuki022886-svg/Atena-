@@ -32,7 +32,7 @@
     - 報告用に比較できるよう --norm batch も残してある．
 
 ■ 動作確認
-$ python src/models/cnn.py
+$ python -m src.train.cnn
 """
 import torch
 import torch.nn as nn

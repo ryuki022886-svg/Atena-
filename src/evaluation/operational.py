@@ -21,26 +21,23 @@
     - これは仕様書3.4節の分布シフトの直接的な帰結であり，限界として報告する．
 ・急変検知の閾値Δは train区間の上昇幅分布の分位点から決める（testを見ないためリークなし）．
 
+■ 出力（<tag> は予測ディレクトリ名から自動で決まる．例: informer_delta）
+・results/operational_*_<tag>.csv
+・figures/04_operational/lead_time_<tag>.png
+・figures/04_operational/spike_detection_<tag>.png
+
 ■ 実行方法
-$ python src/operational.py
+$ python -m src.evaluation.operational --pred-subdir preds_informer_delta
 """
 import argparse
 from pathlib import Path
 
-import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from dataset import TARGET, load_dataframe, split_bounds, steps_per_hour
-
-CONDITION_LABEL = {
-    "A": "条件A Persistence",
-    "B": "条件B 自己回帰のみ",
-    "C": "条件C 自己回帰＋負荷",
-    "D": "条件D 負荷のみ",
-}
+from src.common import plotting
+from src.common.dataset import TARGET, load_dataframe, split_bounds, steps_per_hour
 
 
 def load_predictions(pred_dir: Path) -> pd.DataFrame:
@@ -204,7 +201,7 @@ def check_absolute_threshold(datasets: list, quantiles: list, data_dir: Path) ->
     return pd.DataFrame(rows)
 
 
-def plot_lead_time(errors: pd.DataFrame, tolerances: list, fig_path: Path) -> None:
+def plot_lead_time(errors: pd.DataFrame, tolerances: list, fig_path: Path) -> Path:
     """ホライズンに対するMAEの伸びを，許容誤差の線とあわせて描く．"""
     datasets = sorted(errors["dataset"].unique())
     fig, axes = plt.subplots(1, len(datasets), figsize=(5.5 * len(datasets), 4), squeeze=False)
@@ -212,24 +209,20 @@ def plot_lead_time(errors: pd.DataFrame, tolerances: list, fig_path: Path) -> No
         subset = errors[errors["dataset"] == dataset]
         for condition, group in subset.groupby("condition"):
             group = group.sort_values("horizon")
-            ax.plot(group["horizon"], group["mae"], marker="o", label=f"cond {condition}")
+            ax.plot(group["horizon"], group["mae"], marker="o",
+                    **plotting.condition_kwargs(condition))
         for tol in tolerances:
-            ax.axhline(tol, color="gray", linestyle="--", linewidth=0.8)
+            ax.axhline(tol, color="gray", linestyle=":", linewidth=0.8)
             ax.text(1, tol, f" tolerance {tol}degC", va="bottom", fontsize=8, color="gray")
-        ax.set_xscale("log")
-        ax.set_xticks(sorted(subset["horizon"].unique()))
-        ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-        ax.set_xlabel("horizon (hours)")
+        plotting.horizon_axis(ax, subset["horizon"].unique())
         ax.set_ylabel("test MAE (degC)")
         ax.set_title(f"{dataset}: usable lead time")
-        ax.grid(alpha=0.3)
+        plotting.grid(ax)
         ax.legend()
-    fig.tight_layout()
-    fig.savefig(fig_path, dpi=120)
-    plt.close(fig)
+    return plotting.save(fig, fig_path)
 
 
-def plot_spike_recall(spikes: pd.DataFrame, fig_path: Path) -> None:
+def plot_spike_recall(spikes: pd.DataFrame, fig_path: Path) -> Path:
     """急変検知のrecallを条件別・ホライズン別に描く．"""
     datasets = sorted(spikes["dataset"].unique())
     fig, axes = plt.subplots(1, len(datasets), figsize=(5.5 * len(datasets), 4), squeeze=False)
@@ -237,19 +230,15 @@ def plot_spike_recall(spikes: pd.DataFrame, fig_path: Path) -> None:
         subset = spikes[spikes["dataset"] == dataset]
         for condition, group in subset.groupby("condition"):
             group = group.sort_values("horizon")
-            ax.plot(group["horizon"], group["recall"], marker="o", label=f"cond {condition}")
-        ax.set_xscale("log")
-        ax.set_xticks(sorted(subset["horizon"].unique()))
-        ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+            ax.plot(group["horizon"], group["recall"], marker="o",
+                    **plotting.condition_kwargs(condition))
+        plotting.horizon_axis(ax, subset["horizon"].unique())
         ax.set_ylim(-0.05, 1.05)
-        ax.set_xlabel("horizon (hours)")
         ax.set_ylabel("recall of temperature spikes")
         ax.set_title(f"{dataset}: spike detection")
-        ax.grid(alpha=0.3)
+        plotting.grid(ax)
         ax.legend()
-    fig.tight_layout()
-    fig.savefig(fig_path, dpi=120)
-    plt.close(fig)
+    return plotting.save(fig, fig_path)
 
 
 def main() -> None:
@@ -258,9 +247,10 @@ def main() -> None:
                         help="保全判断で許容できる誤差の仮定（摂氏）")
     parser.add_argument("--spike-quantile", type=float, default=0.95,
                         help="急変とみなす上昇幅の分位点（train区間から算出）")
-    parser.add_argument("--pred-subdir", default="preds_absolute",
-                        help="result-dir配下の予測ディレクトリ（preds_absolute / preds_delta）")
-    parser.add_argument("--suffix", default="", help="出力ファイル名に付ける接尾辞")
+    parser.add_argument("--pred-subdir", default="preds_informer_delta",
+                        help="result-dir配下の予測ディレクトリ（例: preds_informer_delta）")
+    parser.add_argument("--suffix", default=None,
+                        help="出力ファイル名に付ける接尾辞（既定は予測ディレクトリ名から決める）")
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--result-dir", type=Path, default=Path("results"))
     parser.add_argument("--fig-dir", type=Path, default=Path("figures"))
@@ -268,7 +258,13 @@ def main() -> None:
 
     pred_dir = args.result_dir / args.pred_subdir
     if not any(pred_dir.glob("*.npz")):
-        raise SystemExit(f"予測が見つかりません: {pred_dir}（先に src/train.py を実行してください）")
+        raise SystemExit(
+            f"予測が見つかりません: {pred_dir}"
+            "（先に python -m src.train.ablation を実行してください）"
+        )
+
+    # 入力の予測ディレクトリと出力名を必ず対応させ，設定違いの結果が混ざらないようにする．
+    suffix = args.suffix if args.suffix is not None else "_" + args.pred_subdir.removeprefix("preds_")
 
     table = load_predictions(pred_dir)
     datasets = sorted(table["dataset"].unique())
@@ -307,13 +303,15 @@ def main() -> None:
         print(f"  {r.dataset:7s} {r.horizon:7d}h {r.delta:6.2f} {r.condition:>4s} "
               f"{int(r.n_events):6d} {r.recall:7.3f} {r.precision:7.3f} {r.f1:6.3f}")
 
-    absolute.to_csv(args.result_dir / f"operational_absolute_threshold{args.suffix}.csv", index=False)
-    errors.to_csv(args.result_dir / f"operational_error_percentiles{args.suffix}.csv", index=False)
-    leads.to_csv(args.result_dir / f"operational_lead_time{args.suffix}.csv", index=False)
-    spikes.to_csv(args.result_dir / f"operational_spike_detection{args.suffix}.csv", index=False)
-    plot_lead_time(errors, args.tolerances, args.fig_dir / f"operational_lead_time{args.suffix}.png")
-    plot_spike_recall(spikes, args.fig_dir / f"operational_spike_detection{args.suffix}.png")
-    print(f"\n保存先: {args.result_dir}/operational_*.csv, {args.fig_dir}/operational_*.png")
+    absolute.to_csv(args.result_dir / f"operational_absolute_threshold{suffix}.csv", index=False)
+    errors.to_csv(args.result_dir / f"operational_error_percentiles{suffix}.csv", index=False)
+    leads.to_csv(args.result_dir / f"operational_lead_time{suffix}.csv", index=False)
+    spikes.to_csv(args.result_dir / f"operational_spike_detection{suffix}.csv", index=False)
+
+    outdir = args.fig_dir / plotting.FIG_OPERATIONAL
+    plot_lead_time(errors, args.tolerances, outdir / f"lead_time{suffix}.png")
+    plot_spike_recall(spikes, outdir / f"spike_detection{suffix}.png")
+    print(f"\n保存先: {args.result_dir}/operational_*{suffix}.csv, {outdir}/")
 
 
 if __name__ == "__main__":

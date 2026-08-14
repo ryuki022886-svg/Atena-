@@ -19,31 +19,25 @@
 
 ■ 出力
 ・results/summary.csv: 全結果を1行=1設定でまとめた表
-・figures/summary_mae.png: ホライズン別MAEの推移（定式化ごとに並べる）
-・figures/summary_ratio.png: Persistence比のヒートマップ
-・figures/summary_timeseries.png: 予測と実測の重ね書き（代表例）
+・figures/03_ablation/mae.png: ホライズン別MAEの推移（定式化ごとに並べる）
+・figures/03_ablation/ratio.png: Persistence比のヒートマップ
+・figures/03_ablation/timeseries.png: 予測と実測の重ね書き（代表例）
 
 ■ 実行方法
-$ python src/evaluate.py
+$ python -m src.evaluation.evaluate
 """
 import argparse
 from pathlib import Path
 
-import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from dataset import load_dataframe
+from src.common import plotting
+from src.common.dataset import load_dataframe
+from src.common.plotting import CONDITION_LABEL
 
 CONDITION_ORDER = ["A", "B", "C", "D"]
-CONDITION_LABEL = {
-    "A": "A: Persistence",
-    "B": "B: OT lag only",
-    "C": "C: OT lag + load",
-    "D": "D: load only",
-}
 
 
 def collect_results(result_dir: Path) -> pd.DataFrame:
@@ -90,7 +84,7 @@ def add_ratio(table: pd.DataFrame) -> pd.DataFrame:
     return merged.assign(persistence_ratio=merged["test_mae"] / merged["baseline_mae"])
 
 
-def plot_mae(table: pd.DataFrame, fig_path: Path) -> None:
+def plot_mae(table: pd.DataFrame, fig_path: Path) -> Path:
     """ホライズンに対するMAEの推移を，(定式化 × データセット)のパネルで並べる．"""
     combos = sorted(table.groupby(["split_mode", "target_mode"]).groups.keys())
     datasets = sorted(table["dataset"].unique())
@@ -107,24 +101,18 @@ def plot_mae(table: pd.DataFrame, fig_path: Path) -> None:
                 group = subset[subset["condition"] == cond].sort_values("horizon")
                 if group.empty:
                     continue
-                style = {"linestyle": "--", "color": "black"} if cond == "A" else {}
                 ax.plot(group["horizon"], group["test_mae"], marker="o",
-                        label=CONDITION_LABEL[cond], **style)
-            ax.set_xscale("log")
-            ax.set_xticks(sorted(subset["horizon"].unique()))
-            ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-            ax.set_xlabel("horizon (hours)")
+                        **plotting.condition_kwargs(cond))
+            plotting.horizon_axis(ax, subset["horizon"].unique())
             ax.set_ylabel("test MAE (degC)")
             ax.set_title(f"{dataset} / {split_mode} / {target_mode}")
-            ax.grid(alpha=0.3)
+            plotting.grid(ax)
             ax.legend(fontsize=7)
 
-    fig.tight_layout()
-    fig.savefig(fig_path, dpi=120)
-    plt.close(fig)
+    return plotting.save(fig, fig_path)
 
 
-def plot_ratio_heatmap(table: pd.DataFrame, fig_path: Path) -> None:
+def plot_ratio_heatmap(table: pd.DataFrame, fig_path: Path) -> Path:
     """
     Persistence比をヒートマップで示す．
 
@@ -153,13 +141,11 @@ def plot_ratio_heatmap(table: pd.DataFrame, fig_path: Path) -> None:
                      fontsize=9)
         fig.colorbar(im, ax=ax, fraction=0.046)
 
-    fig.tight_layout()
-    fig.savefig(fig_path, dpi=120)
-    plt.close(fig)
+    return plotting.save(fig, fig_path)
 
 
 def plot_timeseries(result_dir: Path, data_dir: Path, fig_path: Path,
-                    pred_tag: str, dataset: str, horizon: int, days: int) -> None:
+                    pred_tag: str, dataset: str, horizon: int, days: int) -> Path:
     """
     予測と実測の重ね書き．数値表では伝わらない「どう外しているか」を示す．
 
@@ -171,28 +157,27 @@ def plot_timeseries(result_dir: Path, data_dir: Path, fig_path: Path,
     conditions = [c for c in ("B", "C", "D")
                   if (pred_dir / f"{dataset}_{c}_h{horizon}_s42.npz").exists()]
     if not conditions:
-        return
+        return fig_path
 
     fig, ax = plt.subplots(figsize=(12, 4.2))
     span = days * 24
     first = np.load(pred_dir / f"{dataset}_{conditions[0]}_h{horizon}_s42.npz")
     times = index[first["target_index"][:span]]
 
+    # 実測は太い黒線．条件Aはそこからの「横引き」なので，同じ黒系の破線で描く．
     ax.plot(times, first["true"][:span], color="black", linewidth=1.6, label="actual")
-    ax.plot(times, first["persistence"][:span], color="gray", linestyle="--",
-            linewidth=1.0, label="A: Persistence")
+    ax.plot(times, first["persistence"][:span], linewidth=1.0, alpha=0.7,
+            **plotting.condition_kwargs("A"))
     for cond in conditions:
         data = np.load(pred_dir / f"{dataset}_{cond}_h{horizon}_s42.npz")
-        ax.plot(times, data["pred"][:span], linewidth=1.0, label=CONDITION_LABEL[cond])
+        ax.plot(times, data["pred"][:span], linewidth=1.0, **plotting.condition_kwargs(cond))
 
     ax.set_xlabel("date")
     ax.set_ylabel("OT (degC)")
     ax.set_title(f"{dataset} horizon={horizon}h ({pred_tag}): prediction vs actual, first {days} days of test")
-    ax.grid(alpha=0.3)
-    ax.legend(fontsize=8)
-    fig.tight_layout()
-    fig.savefig(fig_path, dpi=120)
-    plt.close(fig)
+    plotting.grid(ax)
+    ax.legend()
+    return plotting.save(fig, fig_path)
 
 
 def main() -> None:
@@ -218,11 +203,12 @@ def main() -> None:
             index=["dataset", "horizon"], columns="condition", values="persistence_ratio")
         print(ratio.round(2).to_string())
 
-    plot_mae(table, args.fig_dir / "summary_mae.png")
-    plot_ratio_heatmap(table, args.fig_dir / "summary_ratio.png")
-    plot_timeseries(args.result_dir, args.data_dir, args.fig_dir / "summary_timeseries.png",
+    outdir = args.fig_dir / plotting.FIG_ABLATION
+    plot_mae(table, outdir / "mae.png")
+    plot_ratio_heatmap(table, outdir / "ratio.png")
+    plot_timeseries(args.result_dir, args.data_dir, outdir / "timeseries.png",
                     args.ts_tag, args.ts_dataset, args.ts_horizon, args.ts_days)
-    print(f"\n保存先: {args.result_dir}/summary.csv, {args.fig_dir}/summary_*.png")
+    print(f"\n保存先: {args.result_dir}/summary.csv, {outdir}/")
 
 
 if __name__ == "__main__":

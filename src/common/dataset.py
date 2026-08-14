@@ -49,7 +49,7 @@ ETT アブレーション実験用データセット構築 (Dataset Builder for 
   「負荷情報は『変化しない』という仮定を上回るか」という直接比較になる．
 
 ■ 動作確認
-$ python src/dataset.py --dataset ETTh1 --window 96 --target-mode delta
+$ python -m src.common.dataset --dataset ETTh1 --window 96 --target-mode delta
 """
 import argparse
 from dataclasses import dataclass
@@ -275,10 +275,8 @@ def build_bundle(
     ・horizon_hours: 時間単位で指定し，内部で行数（× steps_per_hour）に換算する
     ・target_mode: "absolute" はOT(t+h)を直接予測する．"delta" はOT(t+h)-OT(t)を
       予測し，経年ドリフトの影響を受けないようにする．
-        - 条件Dはdeltaモードを使えない．OTを入力に持たないため起点OT(t)が無く，
-          変化量を絶対温度へ戻せないからである．これは実装上の都合ではなく，
-          「負荷特徴量だけでは油温の絶対水準を決められない」という条件Dの
-          限界そのものを表している．
+        - 条件Dもdeltaモードで扱える．起点OT(t)はモデルの外側で足し戻すためだけに
+          使うので，「モデルは負荷しか見ていない」という性質は保たれる（冒頭の解説を参照）．
     """
     if condition not in CONDITIONS:
         raise ValueError(f"unknown condition: {condition} (expected one of {list(CONDITIONS)})")
