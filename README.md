@@ -14,40 +14,53 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu   # CPU版を
 
 ## リポジトリ構成
 
+パッケージをフェーズで分け、ディレクトリを見れば処理の流れが追えるようにしている。
+
 ```
-data/                  ETTh1.csv, ETTh2.csv, ETTm1.csv, ETTm2.csv
+data/                     ETTh1.csv, ETTh2.csv, ETTm1.csv, ETTm2.csv
 src/
-  eda.py               EDA（仕様書3節の6分析）
-  trend.py             経年トレンドの可視化（同月の年度間比較）
-  dataset.py           窓生成・分割・正規化（全実験の共通基盤）
-  metrics.py           評価指標（MAE / RMSE）
-  baseline.py          条件A: Persistenceベースライン
-  models/cnn.py        1D CNN（条件B/C/D共通のアーキテクチャ）
-  train.py             学習ループ
-  evaluate.py          結果の集計と可視化
-  operational.py       運用価値の評価（リードタイム・誤差の裾）
-figures/               図
-results/               数値結果（CSV）と予測値（npz）
+  common/                 全フェーズが共有する土台
+    dataset.py            窓生成・分割・正規化
+    metrics.py            評価指標（MAE / RMSE）
+    plotting.py           図の共通スタイル（条件の色・ホライズン軸・保存）
+  analysis/               Phase 1: データの観察
+    eda.py                仕様書3節の6分析
+    trend.py              経年トレンドの可視化（同月の年度間比較）
+  train/                  Phase 2: 実験の実行 → results/ へ書き出す
+    cnn.py                1D CNN（条件B/C/D共通のアーキテクチャ）
+    baseline.py           条件A: Persistenceベースライン
+    ablation.py           学習ループ
+  evaluation/             Phase 2: results/ を集計 → 図表にする
+    evaluate.py           結果の集計と可視化
+    operational.py        運用価値の評価（リードタイム・誤差の裾）
+figures/                  図（フェーズ別。索引は figures/README.md）
+results/                  数値結果（CSV）と予測値（npz）
 ```
 
 ## 実行方法
 
+リポジトリのルートから、モジュールとして実行する。
+
 ```bash
 # Phase 1: EDA
-python src/eda.py --datasets ETTh1 ETTh2
-python src/trend.py
+python -m src.analysis.eda --datasets ETTh1 ETTh2
+python -m src.analysis.trend
 
 # Phase 2: ベースラインと学習
-python src/baseline.py --split-mode informer
-python src/baseline.py --split-mode fiscal
-python src/train.py --conditions B C D --target-mode absolute --split-mode informer
-python src/train.py --conditions B C D --target-mode delta    --split-mode informer
-python src/train.py --conditions B C D --target-mode delta    --split-mode fiscal
+python -m src.train.baseline --split-mode informer
+python -m src.train.baseline --split-mode fiscal
+python -m src.train.ablation --conditions B C D --target-mode absolute --split-mode informer
+python -m src.train.ablation --conditions B C D --target-mode delta    --split-mode informer
+python -m src.train.ablation --conditions B C D --target-mode delta    --split-mode fiscal
 
 # 集計・評価
-python src/evaluate.py
-python src/operational.py --pred-subdir preds_informer_delta --suffix _informer_delta
+python -m src.evaluation.evaluate
+python -m src.evaluation.operational --pred-subdir preds_informer_delta
+python -m src.evaluation.operational --pred-subdir preds_fiscal_delta
 ```
+
+学習を伴うのは `src.train.ablation` のみ（全72モデル）。図表だけを作り直す場合は
+`src.evaluation.*` を実行すればよく、学習のやり直しは不要。
 
 ## 実験設計
 
@@ -92,7 +105,7 @@ python src/operational.py --pred-subdir preds_informer_delta --suffix _informer_
 
 ### 分布シフトの正体は「経年変化」
 
-同じ月を年度間で比較すると（`figures/trend_year_over_year.png`）：
+同じ月を年度間で比較すると（[figures/02_trend/year_over_year.png](figures/02_trend/year_over_year.png)）：
 
 | | 年度1平均 | 年度2平均 | 差 |
 |---|---|---|---|
@@ -105,7 +118,7 @@ ETTh1は季節性では説明できない系統的な低下がある。原因は
 
 ### Phase 2: アブレーション（Persistence比、1.0未満で勝ち）
 
-`figures/summary_ratio.png` を参照。
+[figures/03_ablation/ratio.png](figures/03_ablation/ratio.png) を参照。
 
 ```
               1h    24h    96h   336h        1h    24h    96h   336h
