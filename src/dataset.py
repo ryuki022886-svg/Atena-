@@ -33,7 +33,14 @@ ETT アブレーション実験用データセット構築 (Dataset Builder for 
 
     ※ 経年ドリフトはETTh1では油温(-0.90σ)に，ETTh2では負荷(最大-1.47σ)に現れる．
        入る経路は違うが両データセットに存在するため，全チャンネルに適用する．
-    ※ 条件Dはdeltaモードを使えない（起点となるOT(t)を入力に持たないため）．
+
+■ deltaモードにおける条件Dの扱い
+・条件Dはモデル入力にOTを持たないが，deltaモードでも実行できる．
+  起点OT(t)はモデルの外側で予測値に足し戻すためだけに使うので，
+  「モデルは負荷しか見ていない」という条件Dの性質は保たれる．
+・この形にすると4条件が同じ土俵に乗る．deltaモードでは条件A(Persistence)が
+  「常にΔ=0と答えるモデル」に相当するため，D vs A が
+  「負荷情報は『変化しない』という仮定を上回るか」という直接比較になる．
 
 ■ 動作確認
 $ python src/dataset.py --dataset ETTh1 --window 96 --target-mode delta
@@ -241,8 +248,6 @@ def build_bundle(
         raise ValueError(f"unknown condition: {condition} (expected one of {list(CONDITIONS)})")
     if target_mode not in ("absolute", "delta"):
         raise ValueError(f"unknown target_mode: {target_mode}")
-    if target_mode == "delta" and condition == "D":
-        raise ValueError("条件Dはdeltaモードに対応しない（起点となるOT(t)を入力に持たないため）")
 
     df = load_dataframe(name, data_dir)
     sph = steps_per_hour(df)
