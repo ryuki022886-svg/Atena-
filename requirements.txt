@@ -2,3 +2,7 @@ pandas==2.3.3
 numpy==2.2.6
 matplotlib==3.10.9
 seaborn==0.13.2
+
+# GPUなし環境を想定しCPU版を使う．インストール時は以下を指定すること:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch==2.13.0
