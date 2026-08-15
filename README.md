@@ -3,6 +3,14 @@
 Athena Technologies社 インターン選考課題。ETT（Electricity Transformer Temperature）データセットを用いて、
 変圧器のオイル温度（OT）を将来予測し、実際の運用・保全判断にどの程度価値を出せそうかを検証するPoC。
 
+## 成果物
+
+- **[報告スライド.pdf](報告スライド.pdf)** — クライアント向けの報告資料。結論と運用上の示唆をまとめたもの
+- 本README — 実装の構成、再現手順、数値結果の要約
+
+報告スライドの主張はすべて本リポジトリのコードで再現できる。対応する数値は `results/` のCSV、
+図は `figures/` に置いてある。
+
 ## セットアップ
 
 ```bash
@@ -35,6 +43,8 @@ src/
     operational.py        運用価値の評価（リードタイム・誤差の裾）
 figures/                  図（フェーズ別。索引は figures/README.md）
 results/                  数値結果（CSV）と予測値（npz）
+docs/guide/               開発時の運用ルール（コミット規約・ドキュメント規約）
+報告スライド.pdf          クライアント向けの報告資料
 ```
 
 ## 実行方法
